@@ -1,0 +1,217 @@
+'use client'
+
+import { useEffect, useState, useRef } from 'react';
+import type { User } from '@supabase/supabase-js';
+import { createClient } from '@/lib/supabase/client';
+
+type Profile = { id: string; username: string; first_name: string; last_name: string };
+type Message = { id: number; content: string; user_id: string; created_at: string; is_image: boolean };
+
+export default function ConversationView({
+  selectedUser,
+  conversationId,
+  currentUser,
+}: {
+  selectedUser: Profile;
+  conversationId: number;
+  currentUser: User;
+}) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const supabase = createClient();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    const fetchMessages = async () => {
+      const { data } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true });
+      setMessages(data || []);
+    };
+    fetchMessages();
+
+    const channel = supabase
+      .channel(`conversation_${conversationId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` },
+        (payload) => {
+          setMessages((currentMessages) => [...currentMessages, payload.new as Message]);
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [conversationId, supabase]);
+
+  useEffect(() => { scrollToBottom(); }, [messages]);
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newMessage.trim() === '') return;
+    const { data } = await supabase.functions.invoke('moderate-message', { body: { content: newMessage.trim() } });
+    await supabase.from('messages').insert({ content: data.moderated_content, user_id: currentUser.id, conversation_id: conversationId, is_image: false });
+    setNewMessage('');
+  };
+
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!event.target.files || event.target.files.length === 0) return;
+    const file = event.target.files[0];
+    const fileName = `${currentUser.id}/${Date.now()}_${file.name}`;
+    setUploading(true);
+    const { data: uploadData, error: uploadError } = await supabase.storage.from('chat-images').upload(fileName, file);
+    if (uploadError) { console.error('Error uploading image:', uploadError); setUploading(false); return; }
+    const { data: urlData } = supabase.storage.from('chat-images').getPublicUrl(uploadData.path);
+    await supabase.from('messages').insert({ content: urlData.publicUrl, user_id: currentUser.id, conversation_id: conversationId, is_image: true });
+    setUploading(false);
+  };
+
+  const renderMessageContent = (message: Message) => {
+    if (message.is_image) {
+      return (
+        <img 
+          src={message.content || "/placeholder.svg"} 
+          alt="Chat image" 
+          className="max-w-xs max-h-64 rounded-2xl object-cover cursor-pointer shadow-lg hover:shadow-xl transition-shadow duration-200" 
+        />
+      );
+    }
+    return message.content;
+  };
+
+  const formatTime = (timestamp: string) => {
+    return new Date(timestamp).toLocaleTimeString('en-US', { 
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true 
+    });
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="backdrop-blur-sm bg-white/70 border-b border-white/20 p-6 shadow-sm">
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <div className="w-12 h-12 bg-gradient-to-r from-indigo-100 to-purple-100 rounded-2xl flex items-center justify-center text-indigo-600 font-bold text-lg">
+              {selectedUser.first_name?.[0]}{selectedUser.last_name?.[0]}
+            </div>
+            <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white" />
+          </div>
+          <div className="flex-1">
+            <h2 className="text-lg font-bold text-gray-800">{selectedUser.first_name} {selectedUser.last_name}</h2>
+            <p className="text-sm text-gray-500">@{selectedUser.username} • Online</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="p-2 hover:bg-white/50 rounded-xl transition-colors duration-200">
+              <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+              </svg>
+            </button>
+            <button className="p-2 hover:bg-white/50 rounded-xl transition-colors duration-200">
+              <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        {messages.map((msg, index) => {
+          const isCurrentUser = msg.user_id === currentUser.id;
+          const showAvatar = index === 0 || messages[index - 1].user_id !== msg.user_id;
+          
+          return (
+            <div key={msg.id} className={`flex items-end gap-3 ${isCurrentUser ? 'justify-end' : 'justify-start'}`}>
+              {!isCurrentUser && (
+                <div className={`w-8 h-8 rounded-full bg-gradient-to-r from-indigo-100 to-purple-100 flex items-center justify-center text-indigo-600 font-semibold text-sm ${showAvatar ? 'opacity-100' : 'opacity-0'}`}>
+                  {selectedUser.first_name?.[0]}
+                </div>
+              )}
+              
+              <div className={`group max-w-md ${isCurrentUser ? 'order-1' : ''}`}>
+                <div className={`px-4 py-3 rounded-2xl shadow-sm transition-all duration-200 group-hover:shadow-md ${
+                  isCurrentUser 
+                    ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-br-md' 
+                    : 'bg-white border border-gray-100 text-gray-800 rounded-bl-md'
+                }`}>
+                  {renderMessageContent(msg)}
+                </div>
+                <div className={`text-xs text-gray-400 mt-1 px-1 ${isCurrentUser ? 'text-right' : 'text-left'}`}>
+                  {formatTime(msg.created_at)}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        
+        {uploading && (
+          <div className="flex justify-end">
+            <div className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-4 py-3 rounded-2xl rounded-br-md shadow-sm">
+              <div className="flex items-center gap-2">
+                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Uploading image...
+              </div>
+            </div>
+          </div>
+        )}
+        
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Message Input */}
+      <div className="backdrop-blur-sm bg-white/70 border-t border-white/20 p-6">
+        <form onSubmit={handleSendMessage} className="flex items-end gap-3">
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleImageUpload} 
+            className="hidden" 
+            accept="image/*" 
+          />
+          
+          <button 
+            type="button" 
+            onClick={() => fileInputRef.current?.click()} 
+            disabled={uploading}
+            className="p-3 text-gray-500 hover:text-indigo-500 hover:bg-indigo-50 rounded-xl transition-all duration-200 disabled:opacity-50"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+          </button>
+          
+          <div className="flex-1 relative">
+            <input
+              type="text"
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              className="w-full px-4 py-3 bg-white/80 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200 pr-12"
+              placeholder="Type your message..."
+            />
+            <button
+              type="submit"
+              disabled={!newMessage.trim()}
+              className="absolute right-2 top-1/2 transform -translate-y-1/2 p-2 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl hover:shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+              </svg>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
