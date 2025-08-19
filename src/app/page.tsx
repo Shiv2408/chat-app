@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server';
 import AuthForm from './auth-form';
 import ChatPage from './chat-page';
 import CompleteProfileForm from './complete-profile-form';
+import Workspace from './workspace';
 
 export default async function Home() {
   const supabase = await createClient();
@@ -38,5 +39,6 @@ export default async function Home() {
     .select('*')
     .neq('id', session.user.id);
 
-  return <ChatPage profiles={profiles || []} session={session} />;
+  // return <ChatPage profiles={profiles || []} session={session} />;
+  return <Workspace />;
 }
