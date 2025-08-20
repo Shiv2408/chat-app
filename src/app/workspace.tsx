@@ -1,23 +1,23 @@
-'use client';
+'use client'; 
 
-import CollaborativeSpace from '../components/CollaborativeSpace';
+import CollaborativeSpace from '../components/CollaborativeSpace'; 
 import { useEffect } from 'react';
-import { supabase } from '../lib/supabaseClient';
+import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 
-// This page should be protected, only for logged-in users.
 export default function Workspace() {
   const router = useRouter();
+  const supabase = createClient();
 
   useEffect(() => {
     const checkUser = async () => {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) {
-            router.push('/login'); // Redirect to login if not authenticated
+            router.push('/');
         }
     };
     checkUser();
-  }, [router]);
+  }, [router, supabase]);
 
   return (
     <div>
