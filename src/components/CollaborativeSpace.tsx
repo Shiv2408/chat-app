@@ -1,18 +1,18 @@
 'use client';
 
-import { useCollaborativeSpace } from '@/hooks/useCollaborativeSpace'; // Import the new hook
+import { useCollaborativeSpace } from '@/hooks/useCollaborativeSpace';
 import Cursor from './Cursor';
 import Note from './Note';
 
 export default function CollaborativeSpace() {
-  // Use the hook to get all state and functions
-  const { 
-    user, 
-    onlineUsers, 
-    notes, 
-    handleMouseMove, 
-    handleCreateNote, 
-    handleUpdateNote 
+  const {
+    user,
+    onlineUsers,
+    notes,
+    handleMouseMove,
+    handleCreateNote,
+    handleNoteChange,
+    handleUpdateNote
   } = useCollaborativeSpace();
 
   return (
@@ -20,7 +20,7 @@ export default function CollaborativeSpace() {
       className="relative w-full h-screen overflow-hidden bg-gray-100"
       onMouseMove={handleMouseMove}
     >
-      <div className="absolute bottom-4 left-4 p-4 bg-white rounded-lg shadow-md z-20">
+       <div className="absolute bottom-4 right-4 p-4 bg-white rounded-lg shadow-md z-20">
         <h1 className="text-2xl font-bold">Collaborative Space</h1>
         <div className="mt-4">
             <h2 className="font-semibold">Users Online:</h2>
@@ -38,7 +38,13 @@ export default function CollaborativeSpace() {
       </div>
 
       {notes.map(note => (
-          <Note key={note.id} id={note.id} content={note.content} onUpdate={handleUpdateNote} />
+          <Note
+            key={note.id}
+            id={note.id}
+            content={note.content}
+            onChange={handleNoteChange}
+            onUpdate={handleUpdateNote}
+          />
       ))}
 
       {Object.values(onlineUsers)

@@ -31,10 +31,10 @@ export const useCollaborativeSpace = () => {
   const [user, setUser] = useState<Presence | null>(null);
   const [onlineUsers, setOnlineUsers] = useState<{ [key: string]: Presence }>({});
   const [notes, setNotes] = useState<NoteType[]>([]);
+  const [channel, setChannel] = useState<RealtimeChannel | null>(null);
 
   useEffect(() => {
-    let presenceChannel: RealtimeChannel;
-    let notesChannel: RealtimeChannel;
+    let collaborativeChannel: RealtimeChannel;
 
     const setupAsync = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -53,68 +53,99 @@ export const useCollaborativeSpace = () => {
       const { data: initialNotes } = await supabase.from('notes').select('*');
       if (initialNotes) setNotes(initialNotes);
 
-      // Setup channels
-      presenceChannel = supabase.channel('collaborative-space', { config: { presence: { key: currentUser.id } } });
-      notesChannel = supabase.channel('notes-db-changes');
+      // Setup a single channel for the collaborative space
+      collaborativeChannel = supabase.channel('collaborative-space', {
+        config: {
+          presence: { key: currentUser.id },
+        },
+      });
 
       // Subscribe to presence
-      presenceChannel
-        .on('presence', { event: 'sync' }, () => {
-          const newState = presenceChannel.presenceState<Presence>();
-          const users: { [key: string]: Presence } = {};
-          for (const id in newState) users[id] = newState[id][0];
-          setOnlineUsers(users);
-        })
-        .on('broadcast', { event: 'cursor-pos' }, ({ payload }) => {
-          setOnlineUsers(prev => ({ ...prev, [payload.id]: { ...prev[payload.id], ...payload } }));
-        })
-        .subscribe(async (status) => {
-          if (status === 'SUBSCRIBED') await presenceChannel.track(currentUser);
-        });
+      collaborativeChannel.on('presence', { event: 'sync' }, () => {
+        const newState = collaborativeChannel.presenceState<Presence>();
+        const users: { [key: string]: Presence } = {};
+        for (const id in newState) {
+          users[id] = newState[id][0];
+        }
+        setOnlineUsers(users);
+      });
 
-      // Subscribe to notes
-      notesChannel
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'notes' }, (payload) => {
-          setNotes(currentNotes => {
-            if (payload.eventType === 'INSERT') {
-              if (currentNotes.some(n => n.id === payload.new.id)) return currentNotes;
-              return [...currentNotes, payload.new as NoteType];
-            }
-            if (payload.eventType === 'UPDATE') {
-              return currentNotes.map(note => note.id === payload.new.id ? (payload.new as NoteType) : note);
-            }
-            return currentNotes;
-          });
-        })
-        .subscribe();
+      // Listen for cursor position broadcasts
+      collaborativeChannel.on('broadcast', { event: 'cursor-pos' }, ({ payload }) => {
+        setOnlineUsers(prev => ({ ...prev, [payload.id]: { ...prev[payload.id], ...payload } }));
+      });
+
+      // Listen for note update broadcasts
+      collaborativeChannel.on('broadcast', { event: 'note-update' }, ({ payload }) => {
+        setNotes(currentNotes =>
+          currentNotes.map(note =>
+            note.id === payload.id ? { ...note, content: payload.content } : note
+          )
+        );
+      });
+
+      // Subscribe to database changes for notes as a fallback and for initial state consistency
+      collaborativeChannel.on('postgres_changes', { event: '*', schema: 'public', table: 'notes' }, (payload) => {
+        setNotes(currentNotes => {
+          if (payload.eventType === 'INSERT') {
+            if (currentNotes.some(n => n.id === payload.new.id)) return currentNotes;
+            return [...currentNotes, payload.new as NoteType];
+          }
+          if (payload.eventType === 'UPDATE') {
+            return currentNotes.map(note => (note.id === payload.new.id ? (payload.new as NoteType) : note));
+          }
+          if (payload.eventType === 'DELETE') {
+            return currentNotes.filter(note => note.id !== (payload.old as NoteType).id);
+          }
+          return currentNotes;
+        });
+      });
+
+      collaborativeChannel.subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await collaborativeChannel.track(currentUser);
+        }
+      });
+
+      setChannel(collaborativeChannel);
     };
 
     setupAsync();
 
-    // The definitive cleanup function
     return () => {
-      supabase.removeAllChannels();
+      if (collaborativeChannel) {
+        supabase.removeChannel(collaborativeChannel);
+      }
     };
   }, [supabase]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (user) {
-      const channel = supabase.channel('collaborative-space');
+    if (user && channel) {
       channel.send({
         type: 'broadcast',
         event: 'cursor-pos',
         payload: { id: user.id, x: e.clientX, y: e.clientY },
       });
     }
-  }, [user, supabase]);
+  }, [user, channel]);
 
   const handleCreateNote = useCallback(async () => {
     await supabase.from('notes').insert({ content: 'New Note' });
   }, [supabase]);
 
+  const handleNoteChange = useCallback((id: number, content: string) => {
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'note-update',
+        payload: { id, content },
+      });
+    }
+  }, [channel]);
+
   const handleUpdateNote = useCallback(async (id: number, content: string) => {
     await supabase.from('notes').update({ content }).eq('id', id);
   }, [supabase]);
 
-  return { user, onlineUsers, notes, handleMouseMove, handleCreateNote, handleUpdateNote };
+  return { user, onlineUsers, notes, handleMouseMove, handleCreateNote, handleNoteChange, handleUpdateNote };
 };
